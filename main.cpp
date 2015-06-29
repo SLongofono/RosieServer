@@ -1,6 +1,4 @@
 #include <iostream>
-#include <stdlib.h>
-#include <stdio.h>
 #include <unistd.h>
 #include <fstream>
 #include <thread>
@@ -11,15 +9,21 @@
 #include <netinet/tcp.h>
 
 #include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui.hpp>
 
 
-using namespace std;
+using std::cout;
+using std::endl;
+using std::string;
+using std::thread;
+using std::ofstream;
+using std::vector;
 using namespace cv;
 
 void error(const char *msg);
-void open_inet(int *s, int *c);
+void open_tcp(int *s, int *c, int p);
+void open_udp(int *s, int *c, int p);
 void open_bth(int *s, int *c);
 void close_inet(int *s, int *c);
 void close_bth(int *s, int *c);
@@ -28,49 +32,69 @@ void video(int client);
 void control(int client);
 
 int main(int argc, char *argv[]) {
-    static const int CONNECTION_TYPE_INET =     0;
-    static const int CONNECTION_TYPE_BTH  =     1;
+
+    static const int CONNECTION_TYPE_UDP  =     0;
+    static const int CONNECTION_TYPE_TCP  =     1;
+    static const int CONNECTION_TYPE_BTH  =     2;
 
     static const int METHOD_VIDEO         =     0;
     static const int METHOD_CONTROL       =     1;
     static const int METHOD_BOTH          =     2;
 
-    int connection_type = CONNECTION_TYPE_INET;
+    int connection_type = CONNECTION_TYPE_TCP;
     int method_type = METHOD_BOTH;
     int sock, client;
+    int port = 1234;
 
-    if (argc > 5 || (argc % 2 == 0)) {
+    if (argc > 7 || (argc % 2 == 0)) {
         cout << "Usage: ./rc [-ctype CONNECTIONTYPE] [-cmethod CONTROLMETHOD]" << endl;
-        cout << "   -ctype inet:    Use generic WiFi as the connection method." << endl;
+        cout << "   -ctype tcp:     Use TCP as the connection method." << endl;
+        cout << "   -ctype udp:     Use UDP as the connection method." << endl;
         cout << "   -ctype bth:     Use Bluetooth stack as the connection method." << endl;
         cout << "   -cmethod vid:   Just stream video from Rosie." << endl;
         cout << "   -cmethod ctl:   Just stream controls from application to Rosie." << endl;
         cout << "   -cmethod both:  Stream both video and controls for Rosie." << endl;
+        cout << "   -port ####:     Use the listed port for TCP/UDP communications." << endl;
     }
+
+    cout << "Welcome to Rosie's Control Board." << endl;
 
     for (int i = 0; i < argc; i++) {
         if (string(argv[i]) == "-ctype") {
             if (string(argv[i + 1]) == "bth") {
                 connection_type = CONNECTION_TYPE_BTH;
+                cout << "\tSet to Bluetooth ";
+            } else if (string(argv[i + 1]) == "udp") {
+                connection_type = CONNECTION_TYPE_UDP;
+                cout << "\tSet to UDP ";
+            } else {
+                cout << "\tSet to TCP ";
             }
         } else if (string(argv[i]) == "-cmethod") {
             if (string(argv[i + 1]) == "vid") {
                 method_type = METHOD_VIDEO;
+                cout << "with video" << endl;
             } else if (string(argv[i + 1]) == "ctl") {
                 method_type = METHOD_CONTROL;
+                cout << "with control" << endl;
+            } else {
+                cout << "with both video and control" << endl;
             }
         }
+        if (string(argv[i]) == "-port") {
+            port = atoi(argv[i + 1]);
+            cout << "\tPort: " << port << endl;
+        }
     }
+    cout << endl;
 
-
-    cout << "Welcome to Rosie's Control Board." << endl;
-
-    if (connection_type == CONNECTION_TYPE_INET) {
-        open_inet(&sock, &client);
+    if (connection_type == CONNECTION_TYPE_TCP) {
+        open_tcp(&sock, &client, port);
+    } else if (connection_type == CONNECTION_TYPE_UDP) {
+        open_udp(&sock, &client, port);
     } else {
         open_bth(&sock, &client);
     }
-
 
     if (method_type == METHOD_BOTH) {
         thread vid(video, client);
@@ -81,12 +105,12 @@ int main(int argc, char *argv[]) {
     } else if (method_type == METHOD_CONTROL) {
         thread ctl(control, client);
         ctl.join();
-    } else if (method_type == METHOD_VIDEO) {
+    } else {
         thread vid(video, client);
         vid.join();
     }
 
-    if (connection_type == CONNECTION_TYPE_INET) {
+    if (connection_type == CONNECTION_TYPE_TCP || connection_type == CONNECTION_TYPE_UDP) {
         close_inet(&sock, &client);
     } else {
         close_bth(&sock, &client);
@@ -99,10 +123,10 @@ void error(const char *msg) {
     exit(1);
 }
 
-void open_inet(int *sock, int *client) {
+void open_tcp(int *sock, int *client, int port) {
+    cout << "Opening TCP socket" << endl;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;
-    int portno = 1234;
 
     *sock = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -113,14 +137,20 @@ void open_inet(int *sock, int *client) {
     bzero((char *) &serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(portno);
+    serv_addr.sin_port = htons(port);
 
-    if (bind(*sock, (struct sockaddr *) &serv_addr,
-            sizeof(serv_addr)) < 0) {
+    int ret;
+
+    ret = bind(*sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
+
+    if (ret < 0) {
         error("ERROR on handling");
     }
 
     listen(*sock, 5);
+
+    cout << "Listening on port " << port << endl;
+
     clilen = sizeof(cli_addr);
     *client = accept(*sock,
                      (struct sockaddr *) &cli_addr,
@@ -128,8 +158,12 @@ void open_inet(int *sock, int *client) {
     if (*client < 0) {
         error("ERROR on accept");
     } else {
-        printf("Accepted.\n");
+        cout << "Accepted connection." << endl;
     }
+}
+
+void open_udp(int *sock, int *client, int port) {
+
 }
 
 void close_inet(int *sock, int *client) {
@@ -146,18 +180,26 @@ void close_bth(int *sock, int *client) {
 }
 
 void video(int client) {
-    Mat image, gray;
+    cout << "Starting Video " << endl;
+    Mat image;
     vector<uchar> buff;
     vector<int> params;
 
     VideoCapture cap;
     cap.open(0);
+    cout << "Log point" << endl;
+    if (!cap.isOpened()) {
+        error("ERROR opening");
+    } else
+        cout << "Camera opened" << endl;
     cap.set(CV_CAP_PROP_FRAME_WIDTH, 640);
     cap.set(CV_CAP_PROP_FRAME_HEIGHT, 480);
+
 
     int imgSize, conv_size, n;
 
     while (client >= 0) {
+        cout << "In video loop" << endl;
         cap >> image;
         params.push_back(CV_IMWRITE_JPEG_QUALITY);
         params.push_back(70);
