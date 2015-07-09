@@ -12,6 +12,8 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
+#define MAX_WRITE_SIZE 128
+
 
 using std::cout;
 using std::endl;
@@ -73,12 +75,12 @@ int main(int argc, char *argv[]) {
         } else if (string(argv[i]) == "-cmethod") {
             if (string(argv[i + 1]) == "vid") {
                 method_type = METHOD_VIDEO;
-                cout << "with video" << endl;
+                cout << "With video" << endl;
             } else if (string(argv[i + 1]) == "ctl") {
                 method_type = METHOD_CONTROL;
-                cout << "with control" << endl;
+                cout << "With control" << endl;
             } else {
-                cout << "with both video and control" << endl;
+                cout << "With both video and control" << endl;
             }
         }
         if (string(argv[i]) == "-port") {
@@ -97,17 +99,18 @@ int main(int argc, char *argv[]) {
     }
 
     if (method_type == METHOD_BOTH) {
-        thread vid(video, client);
+//        thread vid(video, client);
         thread ctl(control, client);
-
-        vid.join();
+        video(client);
+//        vid.join();
         ctl.join();
     } else if (method_type == METHOD_CONTROL) {
         thread ctl(control, client);
         ctl.join();
     } else {
-        thread vid(video, client);
-        vid.join();
+//        thread vid(video, client);
+//        vid.join();
+        video(client);
     }
 
     if (connection_type == CONNECTION_TYPE_TCP || connection_type == CONNECTION_TYPE_UDP) {
@@ -124,6 +127,7 @@ void error(const char *msg) {
 }
 
 void open_tcp(int *sock, int *client, int port) {
+    int opt;
     cout << "Opening TCP socket" << endl;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;
@@ -139,10 +143,23 @@ void open_tcp(int *sock, int *client, int port) {
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(port);
 
+
+    // part of nodelay i think
+    opt = 1;
+    if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
+        error("ERROR REUSEADDR");
+    }
+
+    // tmp TCP_NODELAY
+    opt = 1;
+    if (setsockopt(*sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(int)) < 0) {
+        error("ERROR NO_DELAY");
+    }
+
+
+
     int ret;
-
     ret = bind(*sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
-
     if (ret < 0) {
         error("ERROR on handling");
     }
@@ -160,6 +177,11 @@ void open_tcp(int *sock, int *client, int port) {
     } else {
         cout << "Accepted connection." << endl;
     }
+
+
+
+
+
 }
 
 void open_udp(int *sock, int *client, int port) {
@@ -181,12 +203,16 @@ void close_bth(int *sock, int *client) {
 
 void video(int client) {
     cout << "Starting Video " << endl;
+
+    int byte_count, running_byte_count;
+
     Mat image;
     vector<uchar> buff;
     vector<int> params;
 
     VideoCapture cap;
     cap.open(0);
+//    usleep(5000);
     cout << "Log point" << endl;
     if (!cap.isOpened()) {
         error("ERROR opening");
@@ -199,16 +225,16 @@ void video(int client) {
     int imgSize, conv_size, n;
 
     while (client >= 0) {
-        cout << "In video loop" << endl;
+//        cout << "In video loop" << endl;
         cap >> image;
         params.push_back(CV_IMWRITE_JPEG_QUALITY);
-        params.push_back(70);
+        params.push_back(10);
 
         imencode(".jpg", image, buff, params);
         imgSize = image.total() * image.elemSize();
 
-        cout << image.type() << " " << imgSize;
-        cout << " " << buff.size() << endl;
+//        cout << image.type() << " " << imgSize;
+//        cout << " " << buff.size() << endl;
 
         conv_size = htonl(buff.size());
         n = write(client, &conv_size, sizeof(conv_size));
@@ -217,11 +243,25 @@ void video(int client) {
             error("ERROR writing");
         }
 
-        n = write(client, &buff[0], buff.size());
 
-        if (n < 0) {
-            error("ERROR writing");
+
+        for (running_byte_count = 0; running_byte_count < buff.size(); running_byte_count += byte_count) {
+            if ((buff.size() - running_byte_count) < MAX_WRITE_SIZE) {
+                byte_count = write(client, &buff[running_byte_count], buff.size() - running_byte_count);
+            } else {
+                byte_count = write(client, &buff[running_byte_count], MAX_WRITE_SIZE);
+            }
+            if (byte_count < 0) {
+                error("ERROR writing segment");
+            }
         }
+
+//        n = write(client, &buff[0], buff.size());
+//
+//        if (n < 0) {
+//            error("ERROR writing");
+//        }
+        if (waitKey(10) == 27) break;
     }
 }
 
@@ -241,25 +281,21 @@ void control(int client) {
         ctl = rot = '0';
 
         control_bytes = read(client, &control, sizeof(control));
-
         if (control_bytes <= 0) {
             error("ERROR reading control");
         }
 
         rotation_bytes = read(client, &rotation, sizeof(rotation));
-
         if (rotation_bytes <= 0) {
             error("ERROR reading rotation");
         }
 
         pan_bytes = read(client, &x_pan, sizeof(x_pan));
-
         if (pan_bytes <= 0) {
             error("ERROR reading x_pan");
         }
 
         pan_bytes = read(client, &y_pan, sizeof(y_pan));
-
         if (pan_bytes <= 0) {
             error("ERROR reading y_pan");
         }
@@ -321,8 +357,8 @@ void control(int client) {
         x = x_pan + 40;
         y = y_pan + 131;
 
-        output << ctl << rot << x << y << endl;
-//		cout << ctl << rot << x_pan << y_pan << endl;
+        //output << ctl << rot << x << y << endl;
+		cout << ctl << rot << x_pan << y_pan << endl;
     }
     output.close();
 
